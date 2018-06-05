@@ -348,6 +348,7 @@ class TaskController {
     @RequestParam(value = "resultsSize", defaultValue = "10") int resultsSize,
     @RequestParam(value = "reverse", defaultValue = "false") boolean reverse,
     @RequestParam(value = "expand", defaultValue = "false") boolean expand,
+    @RequestBody (required=false) Map body,
     @RequestParam Map<String, String> params
   ) {
 //    Map artifacts = new HashMap<>()
@@ -392,6 +393,9 @@ class TaskController {
       if (key.startsWith("trigger_") && key.length() > "trigger_".length()) {
         triggerParams.put(key.substring("trigger_".length()), params.get(key))
       }
+    }
+    for (String key : body.keySet()) {
+      triggerParams.put(key, body.get(key))
     }
     log.error("triggerParams: {}", triggerParams)
 
