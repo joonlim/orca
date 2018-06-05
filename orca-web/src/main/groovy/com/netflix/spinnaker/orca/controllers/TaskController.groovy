@@ -45,6 +45,7 @@ import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.bind.annotation.*
 import rx.schedulers.Schedulers
 
+import java.nio.charset.Charset
 import java.time.Clock
 import java.util.stream.Collectors
 
@@ -201,18 +202,18 @@ class TaskController {
       Map objectMap = (Map) object
       Map subsetMap = (Map) subset
       Set subsetKeySet = new HashSet(subsetMap.keySet())
+      boolean foundAll = true
       for (Object subsetKey : subsetKeySet) {
         if (!recursivelyCheckIfContainsFields(objectMap.get(subsetKey), subsetMap.get(subsetKey))) {
-          return false
+          foundAll = false
         } else {
           subsetMap.remove(subsetKey)
         }
       }
-      return true
+      return foundAll
     } else if (Collection.isInstance(object) && Collection.isInstance(subset)) {
       Set objectSet = new HashSet<>((Collection) object)
       Set subsetSet = new HashSet<>((Collection) subset)
-      log.info("subsset {}", subsetSet)
       for (Object subsetSetObject : subsetSet) {
         boolean matched = false
         for (Object objectSetObject : objectSet) {
@@ -220,8 +221,6 @@ class TaskController {
             subsetSetObject = new HashMap((Map) subsetSetObject)
           }
           if (recursivelyCheckIfContainsFields(objectSetObject, subsetSetObject)) {
-            log.info("here1 {}", objectSetObject)
-            log.info("here2 {}", subsetSetObject)
             objectSet.remove(objectSetObject)
             matched = true
             break
@@ -348,7 +347,7 @@ class TaskController {
     @RequestParam(value = "pageSize", defaultValue = "10") int pageSize,
     @RequestParam(value = "reverse", defaultValue = "false") boolean reverse,
     @RequestParam(value = "expand", defaultValue = "false") boolean expand,
-    @RequestBody (required=false) Map body,
+//    @RequestBody (required = false) Map body,
     @RequestParam Map<String, String> params
   ) {
 //    Map artifacts = new HashMap<>()
@@ -394,10 +393,18 @@ class TaskController {
         triggerParams.put(key.substring("trigger_".length()), params.get(key))
       }
     }
-    if (body != null)
-      for (String key : body.keySet()) {
-        triggerParams.put(key, body.get(key))
-      }
+    if (params.containsKey("trigger")) {
+      byte[] decoded = Base64.getDecoder().decode(params.get("trigger"))
+      String str = new String(decoded, Charset.forName("UTF-8"));
+      Map triggerParamsDecoded = mapper.readValue(str, Map.class)
+      log.error("triggerParamsDecoded: {}", triggerParamsDecoded)
+      triggerParams.putAll(triggerParamsDecoded)
+    }
+//    if (body != null) {
+//      for (String key : body.keySet()) {
+//        triggerParams.put(key, body.get(key))
+//      }
+//    }
     log.error("triggerParams: {}", triggerParams)
 
     log.error("LOAD EXECUTIONS =====================================================")
@@ -421,7 +428,7 @@ class TaskController {
         Map pipelineExecutionAsMap = mapper.convertValue(pipelineExecution.getTrigger(), Map.class)
         Map triggerParamsCopy = new HashMap(triggerParams)
         return recursivelyCheckIfContainsFields(pipelineExecutionAsMap, triggerParamsCopy) ||
-          (pipelineExecutionAsMap.containsKey("payload") && recursivelyCheckIfContainsFields2(pipelineExecutionAsMap.get("payload"), triggerParamsCopy))
+          (pipelineExecutionAsMap.containsKey("payload") && recursivelyCheckIfContainsFields(pipelineExecutionAsMap.get("payload"), triggerParamsCopy))
       }
     }).subscribeOn(Schedulers.io())
       .toList()
