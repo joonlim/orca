@@ -350,9 +350,9 @@ class TaskController {
     @RequestParam(value = "expand", defaultValue = "false") boolean expand,
     @RequestParam Map<String, String> params
   ) {
-    Map artifacts = new HashMap<>()
-    artifacts.put("name", "myartifact")
-    params.put("trigger_artifacts", Arrays.asList(artifacts))
+//    Map artifacts = new HashMap<>()
+//    artifacts.put("name", "myartifact")
+//    params.put("trigger_artifacts", Arrays.asList(artifacts))
     log.error("start ===============================================================")
     log.error("application: {}", application)
     log.error("statuses: {}", statuses)
