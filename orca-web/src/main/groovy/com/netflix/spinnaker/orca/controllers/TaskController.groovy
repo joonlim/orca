@@ -348,6 +348,7 @@ class TaskController {
     @RequestParam(value = "reverse", defaultValue = "false") boolean reverse,
     @RequestParam(value = "expand", defaultValue = "false") boolean expand,
 //    @RequestBody (required = false) Map body,
+    @RequestParam(value = "trigger", required = false) String trigger, // base64 encoded json
     @RequestParam Map<String, String> params
   ) {
 //    Map artifacts = new HashMap<>()
@@ -377,9 +378,6 @@ class TaskController {
       throw new RuntimeException(String.format("buildTimeStartBoundary must be <= buildTimeEndBoundary: buildTimeStartBoundary=%s, buildTimeEndBoundary=%s", buildTimeStartBoundary, buildTimeEndBoundary))
     }
 
-    log.error("buildTimeStartBoundary: %s", buildTimeStartBoundary)
-    log.error("buildTimeEndBoundary: %s", buildTimeEndBoundary)
-
     if (page < 0) {
       throw new RuntimeException(String.format("page must be >= 0: page=%s", page))
     }
@@ -393,7 +391,7 @@ class TaskController {
         triggerParams.put(key.substring("trigger_".length()), params.get(key))
       }
     }
-    if (params.containsKey("trigger")) {
+    if (trigger != null) {
       byte[] decoded = Base64.getDecoder().decode(params.get("trigger"))
       String str = new String(decoded, Charset.forName("UTF-8"));
       Map triggerParamsDecoded = mapper.readValue(str, Map.class)
