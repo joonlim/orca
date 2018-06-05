@@ -212,7 +212,7 @@ class TaskController {
     } else if (Collection.isInstance(object) && Collection.isInstance(subset)) {
       Set objectSet = new HashSet<>((Collection) object)
       Set subsetSet = new HashSet<>((Collection) subset)
-      log.info("subseset {}", subsetSet)
+      log.info("subsset {}", subsetSet)
       for (Object subsetSetObject : subsetSet) {
         boolean matched = false
         for (Object objectSetObject : objectSet) {
@@ -258,7 +258,7 @@ class TaskController {
         if (!recursivelyCheckIfContainsFields(objectMap.get(subsetKey), subsetMap.get(subsetKey))) {
           return false
         } else {
-//          subsetMap.remove(subsetKey)
+          subsetMap.remove(subsetKey)
         }
       }
       return true
@@ -344,8 +344,8 @@ class TaskController {
     @RequestParam(value = "statuses", required = false) String statuses,
     @RequestParam(value = "buildTimeStartBoundary", defaultValue = "0") long buildTimeStartBoundary,
     @RequestParam(value = "buildTimeEndBoundary", defaultValue = "9223372036854775807" /* Long.MAX_VALUE */) long buildTimeEndBoundary,
-    @RequestParam(value = "paginationStartIndex", defaultValue =  "0") int paginationStartIndex,
-    @RequestParam(value = "resultsSize", defaultValue = "10") int resultsSize,
+    @RequestParam(value = "page", defaultValue =  "0") int page,
+    @RequestParam(value = "pageSize", defaultValue = "10") int pageSize,
     @RequestParam(value = "reverse", defaultValue = "false") boolean reverse,
     @RequestParam(value = "expand", defaultValue = "false") boolean expand,
     @RequestBody (required=false) Map body,
@@ -359,8 +359,8 @@ class TaskController {
     log.error("statuses: {}", statuses)
     log.error("buildTimeStartBoundary: {}", buildTimeStartBoundary)
     log.error("buildTimeEndBoundary: {}", buildTimeEndBoundary)
-    log.error("paginationStartIndex: {}", paginationStartIndex)
-    log.error("resultsSize: {}", resultsSize)
+    log.error("page: {}", page)
+    log.error("pageSize: {}", pageSize)
     log.error("reverse: {}", reverse)
     log.error("expand: {}", expand)
     log.error("params: {}", params)
@@ -381,11 +381,11 @@ class TaskController {
     log.error("buildTimeStartBoundary: %s", buildTimeStartBoundary)
     log.error("buildTimeEndBoundary: %s", buildTimeEndBoundary)
 
-    if (paginationStartIndex < 0) {
-      throw new RuntimeException(String.format("paginationStartIndex must be >= 0: paginationStartIndex=%s", paginationStartIndex))
+    if (page < 0) {
+      throw new RuntimeException(String.format("page must be >= 0: page=%s", page))
     }
-    if (resultsSize <= 0) {
-      throw new RuntimeException(String.format("resultsSize must be > 0: resultsSize=%s", resultsSize))
+    if (pageSize <= 0) {
+      throw new RuntimeException(String.format("pageSize must be > 0: pageSize=%s", pageSize))
     }
 
     Map triggerParams = new HashMap()
@@ -454,10 +454,10 @@ class TaskController {
 
     log.error("PAGINATE ============================================================")
 
-    if (paginationStartIndex >= pipelineExecutions.size()) {
+    if (page >= pipelineExecutions.size()) {
       pipelineExecutions = []
     } else {
-      pipelineExecutions = pipelineExecutions.subList(paginationStartIndex, Math.min(pipelineExecutions.size(), paginationStartIndex + resultsSize))
+      pipelineExecutions = pipelineExecutions.subList(page, Math.min(pipelineExecutions.size(), page + pageSize))
     }
 
     log.error("UNEXPAND ============================================================")
