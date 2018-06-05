@@ -79,6 +79,7 @@ class OperationsController {
 
   @RequestMapping(value = "/orchestrate", method = RequestMethod.POST)
   Map<String, Object> orchestrate(@RequestBody Map pipeline, HttpServletResponse response) {
+    log.error("[joon] pipeline1: {}", pipeline);
     Exception pipelineError = null
     boolean plan = pipeline.plan ?: false
     try {
@@ -97,6 +98,7 @@ class OperationsController {
 
     def augmentedContext = [trigger: pipeline.trigger]
     def processedPipeline = contextParameterProcessor.process(pipeline, augmentedContext, false)
+    log.error("[joon] pipeline2: {}", processedPipeline);
     processedPipeline.trigger = objectMapper.convertValue(processedPipeline.trigger, Trigger)
 
     if (pipelineError == null) {
@@ -266,6 +268,7 @@ class OperationsController {
     def json = objectMapper.writeValueAsString(config)
     log.info('requested pipeline: {}', json)
 
+    // TODO JOON: propogate correlationId (if it exists) to the execution.
     def pipeline = executionLauncher.start(PIPELINE, json)
 
     [ref: "/pipelines/${pipeline.id}".toString()]

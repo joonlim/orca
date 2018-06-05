@@ -26,9 +26,9 @@ import com.netflix.spinnaker.orca.pipeline.model.support.TriggerDeserializer
 @JsonDeserialize(using = TriggerDeserializer::class)
 interface Trigger {
   val type: String
-  val correlationId: String?
+  val correlationId: String? // used to prevent duplicate executions
   val user: String?
-  val parameters: Map<String, Any>
+  val parameters: Map<String, Any> // dynamic parameters?
   val artifacts: List<Artifact>
   val notifications: List<Map<String, Any>>
   var isRebake: Boolean

@@ -15,17 +15,20 @@
  */
 package com.netflix.spinnaker.orca.pipeline.persistence;
 
+import static java.util.stream.Collectors.toList;
+
 import com.netflix.spinnaker.orca.ExecutionStatus;
 import com.netflix.spinnaker.orca.pipeline.model.Execution;
 import com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType;
 import com.netflix.spinnaker.orca.pipeline.model.Stage;
-import rx.Observable;
-
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+import java.util.Objects;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-import java.util.*;
-
-import static java.util.stream.Collectors.toList;
+import rx.Observable;
 
 public interface ExecutionRepository {
   void store(@Nonnull Execution orchestration);
@@ -118,9 +121,29 @@ public interface ExecutionRepository {
       return this;
     }
 
+    public long getBuildTimeStartBoundary() {
+      return buildTimeStartBoundary;
+    }
+
+    public ExecutionCriteria setBuildTimeStartBoundary(long buildTimeStartBoundary) {
+      this.buildTimeStartBoundary = buildTimeStartBoundary;
+      return this;
+    }
+
+    public long getBuildTimeEndBoundary() {
+      return buildTimeEndBoundary;
+    }
+
+    public ExecutionCriteria setBuildTimeEndBoundary(long buildTimeEndBoundary) {
+      this.buildTimeEndBoundary = buildTimeEndBoundary;
+      return this;
+    }
+
     private int limit;
     private Collection<ExecutionStatus> statuses = new ArrayList<>();
     private int page;
+    private long buildTimeStartBoundary = 0;
+    private long buildTimeEndBoundary = Long.MAX_VALUE;
 
     @Override public boolean equals(Object o) {
       if (this == o) return true;
@@ -128,11 +151,13 @@ public interface ExecutionRepository {
       ExecutionCriteria that = (ExecutionCriteria) o;
       return limit == that.limit &&
         Objects.equals(statuses, that.statuses) &&
-        page == that.page;
+        page == that.page &&
+        buildTimeStartBoundary == that.buildTimeStartBoundary &&
+        buildTimeEndBoundary == that.buildTimeEndBoundary;
     }
 
     @Override public int hashCode() {
-      return Objects.hash(limit, statuses, page);
+      return Objects.hash(limit, statuses, page, buildTimeStartBoundary, buildTimeEndBoundary);
     }
   }
 }

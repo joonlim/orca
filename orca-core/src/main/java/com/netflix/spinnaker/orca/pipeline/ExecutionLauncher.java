@@ -16,6 +16,15 @@
 
 package com.netflix.spinnaker.orca.pipeline;
 
+import static com.netflix.spinnaker.orca.pipeline.model.Execution.AuthenticationDetails;
+import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType;
+import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.ORCHESTRATION;
+import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.PIPELINE;
+import static java.lang.Boolean.parseBoolean;
+import static java.lang.String.format;
+import static java.util.Collections.emptyList;
+import static java.util.Collections.emptyMap;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.netflix.spectator.api.Registry;
 import com.netflix.spinnaker.orca.ExecutionStatus;
@@ -26,27 +35,17 @@ import com.netflix.spinnaker.orca.pipeline.model.Stage;
 import com.netflix.spinnaker.orca.pipeline.model.Trigger;
 import com.netflix.spinnaker.orca.pipeline.persistence.ExecutionNotFoundException;
 import com.netflix.spinnaker.orca.pipeline.persistence.ExecutionRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.stereotype.Component;
-
 import java.io.IOException;
 import java.io.Serializable;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-
-import static com.netflix.spinnaker.orca.pipeline.model.Execution.AuthenticationDetails;
-import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType;
-import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.ORCHESTRATION;
-import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.PIPELINE;
-import static java.lang.Boolean.parseBoolean;
-import static java.lang.String.format;
-import static java.util.Collections.emptyList;
-import static java.util.Collections.emptyMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.stereotype.Component;
 
 @Component
 public class ExecutionLauncher {
@@ -79,7 +78,10 @@ public class ExecutionLauncher {
   }
 
   public Execution start(ExecutionType type, String configJson) throws Exception {
-    final Execution execution = parse(type, configJson);
+    final Execution execution = parse(type, configJson); // todo
+
+    // TODO(joonlim)
+    log.error("[joon] execution: {} {}", execution.getStartTime(), execution.getBuildTime());
 
     final Execution existingExecution = checkForCorrelatedExecution(execution);
     if (existingExecution != null) {
@@ -91,7 +93,7 @@ public class ExecutionLauncher {
     persistExecution(execution);
 
     try {
-      start(execution);
+      start(execution); // todo
     } catch (Throwable t) {
       handleStartupFailure(execution, t);
     }
@@ -138,6 +140,7 @@ public class ExecutionLauncher {
     Trigger trigger = execution.getTrigger();
 
     try {
+      // TODO(joonlim)
       Execution o = executionRepository.retrieveOrchestrationForCorrelationId(
         trigger.getCorrelationId()
       );

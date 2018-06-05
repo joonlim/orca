@@ -16,15 +16,18 @@
 
 package com.netflix.spinnaker.orca.controllers
 
-import java.time.Clock
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.netflix.spinnaker.fiat.shared.FiatPermissionEvaluator
 import com.netflix.spinnaker.orca.ExecutionStatus
 import com.netflix.spinnaker.orca.front50.Front50Service
+import com.netflix.spinnaker.orca.front50.model.Application
 import com.netflix.spinnaker.orca.model.OrchestrationViewModel
 import com.netflix.spinnaker.orca.pipeline.ExecutionRunner
 import com.netflix.spinnaker.orca.pipeline.StageDefinitionBuilder
 import com.netflix.spinnaker.orca.pipeline.model.Execution
 import com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType
 import com.netflix.spinnaker.orca.pipeline.model.Stage
+import com.netflix.spinnaker.orca.pipeline.model.Trigger
 import com.netflix.spinnaker.orca.pipeline.persistence.ExecutionRepository
 import com.netflix.spinnaker.orca.pipeline.util.ContextParameterProcessor
 import com.netflix.spinnaker.security.AuthenticatedRequest
@@ -37,8 +40,14 @@ import org.springframework.security.access.prepost.PostAuthorize
 import org.springframework.security.access.prepost.PostFilter
 import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.security.access.prepost.PreFilter
+import org.springframework.security.core.Authentication
+import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.bind.annotation.*
 import rx.schedulers.Schedulers
+
+import java.time.Clock
+import java.util.stream.Collectors
+
 import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.ORCHESTRATION
 import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.PIPELINE
 import static java.time.ZoneOffset.UTC
@@ -60,6 +69,12 @@ class TaskController {
 
   @Autowired
   ContextParameterProcessor contextParameterProcessor
+
+  @Autowired(required = false)
+  FiatPermissionEvaluator permissionEvaluator
+
+  @Autowired
+  ObjectMapper mapper // autowired?
 
   @Value('${tasks.daysOfExecutionHistory:14}')
   int daysOfExecutionHistory
@@ -175,6 +190,512 @@ class TaskController {
     def allPipelines = rx.Observable.merge(ids.collect {
       executionRepository.retrievePipelinesForPipelineConfigId(it, executionCriteria)
     }).subscribeOn(Schedulers.io()).toList().toBlocking().single().sort(startTimeOrId)
+
+    return filterPipelinesByHistoryCutoff(allPipelines, limit)
+  }
+
+  private boolean recursivelyCheckIfContainsFields(Object object, Object subset) {
+    if (String.isInstance(object) && String.isInstance(subset)) {
+      return ((String) object).matches((String) subset)
+    } else if (Map.isInstance(object) && Map.isInstance(subset)) {
+      Map objectMap = (Map) object
+      Map subsetMap = (Map) subset
+      Set subsetKeySet = new HashSet(subsetMap.keySet())
+      for (Object subsetKey : subsetKeySet) {
+        if (!recursivelyCheckIfContainsFields(objectMap.get(subsetKey), subsetMap.get(subsetKey))) {
+          return false
+        } else {
+          subsetMap.remove(subsetKey)
+        }
+      }
+      return true
+    } else if (Collection.isInstance(object) && Collection.isInstance(subset)) {
+      Set objectSet = new HashSet<>((Collection) object)
+      Set subsetSet = new HashSet<>((Collection) subset)
+      log.info("subseset {}", subsetSet)
+      for (Object subsetSetObject : subsetSet) {
+        boolean matched = false
+        for (Object objectSetObject : objectSet) {
+          if (Map.isInstance(subsetSetObject)) {
+            subsetSetObject = new HashMap((Map) subsetSetObject)
+          }
+          if (recursivelyCheckIfContainsFields(objectSetObject, subsetSetObject)) {
+            log.info("here1 {}", objectSetObject)
+            log.info("here2 {}", subsetSetObject)
+            objectSet.remove(objectSetObject)
+            matched = true
+            break
+          }
+        }
+        if (!matched) {
+          return false
+        }
+      }
+      return true
+//    } else if (Collection.isInstance(subset)) {
+//      Map objectMap = mapper.convertValue(object, Map.class)
+//      Map subsetMap = (Map) subset
+//      for (Object subsetKey : subsetMap.keySet()) {
+//        if (!recursivelyCheckIfContainsFields(objectMap.get(subsetKey), subsetMap.get(subsetKey))) {
+//          return false
+//        }
+//      }
+//      return true
+      // todo: what about array?
+    } else {
+      return object == subset
+    }
+  }
+
+  private boolean recursivelyCheckIfContainsFields2(Object object, Object subset) {
+    if (String.isInstance(object) && String.isInstance(subset)) {
+      return ((String) object).matches((String) subset)
+    } else if (Map.isInstance(object) && Map.isInstance(subset)) {
+      Map objectMap = (Map) object
+      Map subsetMap = (Map) subset
+      Set subsetKeySet = new HashSet(subsetMap.keySet())
+      for (Object subsetKey : subsetKeySet) {
+        if (!recursivelyCheckIfContainsFields(objectMap.get(subsetKey), subsetMap.get(subsetKey))) {
+          return false
+        } else {
+//          subsetMap.remove(subsetKey)
+        }
+      }
+      return true
+    } else if (Collection.isInstance(object) && Collection.isInstance(subset)) {
+      Set objectSet = new HashSet<>((Collection) object)
+      Set subsetSet = new HashSet<>((Collection) subset)
+      for (Object subsetSetObject : subsetSet) {
+        boolean matched = false
+        for (Object objectSetObject : objectSet) {
+          if (recursivelyCheckIfContainsFields(objectSetObject, subsetSetObject)) {
+            objectSet.remove(objectSetObject)
+            matched = true
+            continue
+          }
+        }
+        if (!matched) {
+          return false
+        }
+      }
+      return true
+//    } else if (Collection.isInstance(subset)) {
+//      Map objectMap = mapper.convertValue(object, Map.class)
+//      Map subsetMap = (Map) subset
+//      for (Object subsetKey : subsetMap.keySet()) {
+//        if (!recursivelyCheckIfContainsFields(objectMap.get(subsetKey), subsetMap.get(subsetKey))) {
+//          return false
+//        }
+//      }
+//      return true
+      // todo: what about array?
+    } else {
+      return object == subset
+    }
+  }
+//  boolean containsTriggerFields(Trigger trigger, Map fieldsToContain) {
+//    for (String checkKey : fieldsToContain.keySet()) {
+//      Object checkValue = fieldsToContain.get(checkKey)
+//      Object triggerValue
+//      switch (checkKey) {
+//        case "type":
+//          triggerValue = trigger.getType()
+//          break
+//        case "correlationId": // Keel correlation ID
+//          triggerValue = trigger.getCorrelationId()
+//          break
+//        case "user":
+//          triggerValue = trigger.getUser()
+//          break
+//        case "parameters":
+//          triggerValue = trigger.getParameters()
+//          break
+//        case "artifacts":
+//          triggerValue = trigger.getArtifacts()
+//          break
+//        case "notifications":
+//          triggerValue = trigger.getNotifications()
+//          break
+//        case "isRebake":
+//          triggerValue = trigger.isRebake()
+//          break
+//        case "isDryRun":
+//          triggerValue = trigger.isDryRun()
+//          break
+    // isStrategy
+//        case "resolvedExpectedArtifacts":
+//          triggerValue = trigger.getResolvedExpectedArtifacts()
+//          break
+    //
+//        default:
+//          // "other"
+//          triggerValue = trigger.getOther().get("key")
+//      }
+//      if (!recursivelyCheckIfContainsFields(triggerValue, checkValue)) {
+//        return false
+//      }
+//    }
+//    return true
+//  }
+
+  @RequestMapping(value = "/pipelines/search", method = RequestMethod.GET)
+  List<Execution> searchForPipelineExecutions(
+    @RequestParam(value = "application", required = false) String application,
+    @RequestParam(value = "statuses", required = false) String statuses,
+    @RequestParam(value = "buildTimeStartBoundary", defaultValue = "0") long buildTimeStartBoundary,
+    @RequestParam(value = "buildTimeEndBoundary", defaultValue = "9223372036854775807" /* Long.MAX_VALUE */) long buildTimeEndBoundary,
+    @RequestParam(value = "paginationStartIndex", defaultValue =  "0") int paginationStartIndex,
+    @RequestParam(value = "resultsSize", defaultValue = "10") int resultsSize,
+    @RequestParam(value = "reverse", defaultValue = "false") boolean reverse,
+    @RequestParam(value = "expand", defaultValue = "false") boolean expand,
+    @RequestParam Map<String, String> params
+  ) {
+    Map artifacts = new HashMap<>()
+    artifacts.put("name", "myartifact")
+    params.put("trigger_artifacts", Arrays.asList(artifacts))
+    log.error("start ===============================================================")
+    log.error("application: {}", application)
+    log.error("statuses: {}", statuses)
+    log.error("buildTimeStartBoundary: {}", buildTimeStartBoundary)
+    log.error("buildTimeEndBoundary: {}", buildTimeEndBoundary)
+    log.error("paginationStartIndex: {}", paginationStartIndex)
+    log.error("resultsSize: {}", resultsSize)
+    log.error("reverse: {}", reverse)
+    log.error("expand: {}", expand)
+    log.error("params: {}", params)
+    log.error("VALIDATING INPUT ====================================================")
+
+    statuses = statuses ?: ExecutionStatus.values()*.toString().join(",")
+
+    if (buildTimeStartBoundary < 0) {
+      throw new RuntimeException(String.format("buildTimeStartBoundary must be >= 0: buildTimeStartBoundary=%s", buildTimeStartBoundary))
+    }
+    if (buildTimeEndBoundary < 0) {
+      throw new RuntimeException(String.format("buildTimeEndBoundary must be >= 0: buildTimeEndBoundary=%s", buildTimeEndBoundary))
+    }
+    if (buildTimeStartBoundary > buildTimeEndBoundary) {
+      throw new RuntimeException(String.format("buildTimeStartBoundary must be <= buildTimeEndBoundary: buildTimeStartBoundary=%s, buildTimeEndBoundary=%s", buildTimeStartBoundary, buildTimeEndBoundary))
+    }
+
+    log.error("buildTimeStartBoundary: %s", buildTimeStartBoundary)
+    log.error("buildTimeEndBoundary: %s", buildTimeEndBoundary)
+
+    if (paginationStartIndex < 0) {
+      throw new RuntimeException(String.format("paginationStartIndex must be >= 0: paginationStartIndex=%s", paginationStartIndex))
+    }
+    if (resultsSize <= 0) {
+      throw new RuntimeException(String.format("resultsSize must be > 0: resultsSize=%s", resultsSize))
+    }
+
+    Map triggerParams = new HashMap()
+    for (String key : params.keySet()) {
+      if (key.startsWith("trigger_") && key.length() > "trigger_".length()) {
+        triggerParams.put(key.substring("trigger_".length()), params.get(key))
+      }
+    }
+    log.error("triggerParams: {}", triggerParams)
+
+    log.error("LOAD EXECUTIONS =====================================================")
+
+    ExecutionRepository.ExecutionCriteria executionCriteria = new ExecutionRepository.ExecutionCriteria(
+      limit: Integer.MAX_VALUE,
+      statuses: (statuses.split(",") as Collection),
+      buildTimeStartBoundary: buildTimeStartBoundary,
+      buildTimeEndBoundary: buildTimeEndBoundary
+    )
+
+    List<String> applicationNames = application ? [application] : front50Service.getAllApplications()*.name as List<String>
+    log.error("applicationNames: {}", applicationNames)
+    List<String> pipelineConfigIds = getPipelineConfigIdsOfReadableApplications(applicationNames)
+
+    log.error("pipelineConfigIds: {}", pipelineConfigIds)
+
+    List<Execution> pipelineExecutions = rx.Observable.merge(pipelineConfigIds.collect {
+      // TODO: It may make sense to periodically cache the results of retrievePipelinesForPipelineConfigId
+      executionRepository.retrievePipelinesForPipelineConfigId(it, executionCriteria).filter { pipelineExecution ->
+        Map pipelineExecutionAsMap = mapper.convertValue(pipelineExecution.getTrigger(), Map.class)
+        Map triggerParamsCopy = new HashMap(triggerParams)
+        return recursivelyCheckIfContainsFields(pipelineExecutionAsMap, triggerParamsCopy) ||
+          (pipelineExecutionAsMap.containsKey("payload") && recursivelyCheckIfContainsFields2(pipelineExecutionAsMap.get("payload"), triggerParamsCopy))
+      }
+    }).subscribeOn(Schedulers.io())
+      .toList()
+      .toBlocking()
+      .single()
+      .sort(startTimeOrId)
+
+
+//    List<Execution> pipelineExecutions = rx.Observable.merge(pipelineConfigIds.collect {
+////      executionRepository.retrievePipelinesForPipelineConfigId(it, executionCriteria).filter { pipelineExecution -> containsTriggerFields(pipelineExecution.getTrigger(), body) }
+//      executionRepository.retrievePipelinesForPipelineConfigId(it, executionCriteria)
+//    }).subscribeOn(Schedulers.io())
+//    .filter{ pipelineExecution ->
+//        if (body != null) {
+//          return recursivelyCheckIfContainsFields(mapper.convertValue(pipelineExecution.getTrigger(), Map.class), body)
+//        } else {
+//          return true
+//        }
+//      }.subscribeOn(Schedulers.computation())
+//      .toList()
+//      .toBlocking()
+//      .single()
+//      .sort(startTimeOrId)
+
+    log.error("REVERSE =============================================================")
+
+    if (reverse) {
+      pipelineExecutions.reverse(true)
+    }
+
+    log.error("PAGINATE ============================================================")
+
+    if (paginationStartIndex >= pipelineExecutions.size()) {
+      pipelineExecutions = []
+    } else {
+      pipelineExecutions = pipelineExecutions.subList(paginationStartIndex, Math.min(pipelineExecutions.size(), paginationStartIndex + resultsSize))
+    }
+
+    log.error("UNEXPAND ============================================================")
+
+    if (!expand) {
+      unexpandPipelineExecutions(pipelineExecutions)
+    }
+
+    log.error("end =================================================================")
+    return pipelineExecutions
+  }
+
+  // TODO(joonlim)
+  @RequestMapping(value = "/pipelines/trigger", method = RequestMethod.GET)
+  List<Execution> listLatestPipelineExecutionsWithPayload(
+    @RequestBody List<Map<String, String>> body, // payloadParamsSubset
+    @RequestParam(value = "limit", defaultValue = "5") Integer limit,
+    @RequestParam(value = "statuses", required = false) String statuses
+  ) {
+    // validate input
+    if (body.size() == 0) {
+      // throw exception?
+      return []
+    }
+    for (Map<String, String> payloadDescription : body) {
+      if (payloadDescription.size() == 0) {
+        return []
+      }
+    }
+
+    statuses = statuses ?: ExecutionStatus.values()*.toString().join(",")
+    def executionCriteria = new ExecutionRepository.ExecutionCriteria(
+      limit: limit,
+      statuses: (statuses.split(",") as Collection)
+    )
+
+    // Auth logic
+    // get all applications
+    Authentication auth = SecurityContextHolder.context.authentication
+    def allIds = []
+    for (Application application : front50Service.getAllApplications()) {
+      if (permissionEvaluator && !permissionEvaluator.hasPermission(auth, application.name, 'APPLICATION', 'READ')) {
+        continue
+      }
+
+      def pipelineConfigIds = front50Service.getPipelines(application.name, false)*.id as List<String>
+      def strategyConfigIds = front50Service.getStrategies(application.name)*.id as List<String>
+      allIds = allIds + pipelineConfigIds + strategyConfigIds // scales?
+    }
+
+    // all ids
+//    def pipelineConfigIds = front50Service.getAllPipelines()*.id as List<String>
+//    def strategyConfigIds = front50Service.getAllStrategies()*.id as List<String>
+//    def allIds = pipelineConfigIds + strategyConfigIds
+
+    def allPipelines = rx.Observable.merge(allIds.collect {
+      executionRepository.retrievePipelinesForPipelineConfigId(it, executionCriteria).filter { pipeline ->
+        Map<String, String> payload = pipeline.getTrigger().getOther().get("payload")
+        if (payload == null || payload.size() == 0) {
+          return false
+        }
+
+        // Check each input payload description to see if any of them match
+        for (Map<String, String> payloadDescription : body) {
+          boolean allMatched = true
+          for (String key : payloadDescription.keySet()) {
+            if (payload.get(key) != payloadDescription.get(key)) {
+              allMatched = false
+              break
+            }
+          }
+          if (allMatched) {
+            return true
+          }
+        }
+        return false // all payload descriptions don't match
+
+        // filter by each param
+//        for (String key : parameters.keySet()) {
+//          Map<String, String> payload = pipeline.getTrigger().getOther().get("payload");
+//          if (parameters.get(key) != payload.get(key)) {
+//            return false
+//          }
+//        }
+//        return true
+      }
+    }).subscribeOn(Schedulers.io()).toList().toBlocking().single().sort(startTimeOrId)
+
+    return filterPipelinesByHistoryCutoff(allPipelines, limit)
+  }
+
+  // TODO(joonlim)
+  @RequestMapping(value = "/pipelines/artifact", method = RequestMethod.GET)
+  List<Execution> listLatestPipelineExecutionsWithArtifact(
+    @RequestBody Map<String, String> artifactParamsSubset,
+    @RequestParam(value = "limit", defaultValue = "5") Integer limit,
+    @RequestParam(value = "statuses", required = false) String statuses
+  ) {
+    // validate input
+    if (artifactParamsSubset.size() == 0) {
+      // throw exception?
+      return []
+    }
+    if (artifactParamsSubset.size() == 0) {
+      return []
+    }
+
+    statuses = statuses ?: ExecutionStatus.values()*.toString().join(",")
+    def executionCriteria = new ExecutionRepository.ExecutionCriteria(
+      limit: limit,
+      statuses: (statuses.split(",") as Collection)
+    )
+
+    // Auth logic
+    // get all applications
+    Authentication auth = SecurityContextHolder.context.authentication
+    def allIds = []
+    for (Application application : front50Service.getAllApplications()) {
+      if (permissionEvaluator && !permissionEvaluator.hasPermission(auth, application.name, 'APPLICATION', 'READ')) {
+        continue
+      }
+
+      def pipelineConfigIds = front50Service.getPipelines(application.name, false)*.id as List<String>
+      def strategyConfigIds = front50Service.getStrategies(application.name)*.id as List<String>
+      allIds = allIds + pipelineConfigIds + strategyConfigIds // scales?
+    }
+
+    def allPipelines = rx.Observable.merge(allIds.collect {
+      executionRepository.retrievePipelinesForPipelineConfigId(it, executionCriteria).filter { pipeline ->
+        List<Map<String, String>> artifacts = pipeline.getTrigger().getArtifacts();
+        if (artifacts == null || artifacts.isEmpty()) {
+          return false;
+        }
+
+        for (Map<String, String> artifact : artifacts) {
+          boolean allMatched = true
+          for (String key : artifactParamsSubset.keySet()) {
+            if (artifact.get(key) != artifactParamsSubset.get(key)) {
+              allMatched = false
+              break
+            }
+          }
+          if (allMatched) {
+            return true
+          }
+        }
+        return false
+      }
+    }).subscribeOn(Schedulers.io()).toList().toBlocking().single().sort(startTimeOrId)
+
+    return filterPipelinesByHistoryCutoff(allPipelines, limit)
+  }
+
+  /**
+   * Grab pipeline executions triggered with a triggerCorrelationId
+   * @param triggerCorrelationId
+   * @param limit
+   * @param statuses
+   * @return
+   */
+  // TODO(joonlim)
+  @RequestMapping(value = "/pipelines/webhook", method = RequestMethod.GET)
+  List<Execution> listPipelineExecutionsTriggeredByWebhook(
+    @RequestParam(value = "triggerCorrelationId") String triggerCorrelationId,
+    @RequestParam(value = "limit", defaultValue = "5") Integer limit,
+    @RequestParam(value = "statuses", required = false) String statuses
+  ) {
+    statuses = statuses ?: ExecutionStatus.values()*.toString().join(",")
+    def executionCriteria = new ExecutionRepository.ExecutionCriteria(
+      limit: limit,
+      statuses: (statuses.split(",") as Collection)
+    )
+
+    // Auth logic
+    // get all applications
+    Authentication auth = SecurityContextHolder.context.authentication
+    def allIds = []
+    for (Application application : front50Service.getAllApplications()) {
+      if (permissionEvaluator && !permissionEvaluator.hasPermission(auth, application.name, 'APPLICATION', 'READ')) {
+        continue
+      }
+
+      def pipelineConfigIds = front50Service.getPipelines(application.name, false)*.id as List<String>
+      def strategyConfigIds = front50Service.getStrategies(application.name)*.id as List<String>
+      allIds = allIds + pipelineConfigIds + strategyConfigIds // scales?
+    }
+
+    // all ids
+//    def pipelineConfigIds = front50Service.getAllPipelines()*.id as List<String>
+//    def strategyConfigIds = front50Service.getAllStrategies()*.id as List<String>
+//    def allIds = pipelineConfigIds + strategyConfigIds
+
+    def allPipelines = rx.Observable.merge(allIds.collect {
+      executionRepository.retrievePipelinesForPipelineConfigId(it, executionCriteria).filter { pipeline ->
+        pipeline.getTrigger().getOther().get("triggerCorrelationId") == triggerCorrelationId
+      }
+    }).subscribeOn(Schedulers.io()).toList().toBlocking().single().sort(startTimeOrId)
+
+    return filterPipelinesByHistoryCutoff(allPipelines, limit)
+  }
+
+  // TODO(joonlim)
+  // filters by trigger type
+  @RequestMapping(value = "/applications/{application}/pipelines/trigger", method = RequestMethod.GET)
+  List<Execution> listLatestPipelinesForTrigger(
+    @PathVariable String application,
+    @RequestBody Trigger trigger,
+    @RequestParam(value = "limit", defaultValue = "5") Integer limit,
+    @RequestParam(value = "statuses", required = false) String statuses) {
+
+    statuses = statuses ?: ExecutionStatus.values()*.toString().join(",")
+    def executionCriteria = new ExecutionRepository.ExecutionCriteria(
+      limit: limit,
+      statuses: (statuses.split(",") as Collection)
+    )
+
+    def pipelineConfigIds = front50Service.getPipelines(application, false)*.id as List<String>
+    // def strategyConfigIds = front50Service.getStrategies(application)*.id as List<String>
+    def allIds = pipelineConfigIds// + strategyConfigIds
+
+    def allPipelines = rx.Observable.merge(allIds.collect {
+      executionRepository.retrievePipelinesForPipelineConfigId(it, executionCriteria).filter { pipeline ->
+        // event id
+        pipeline.getTrigger().getType() == trigger.getType()
+        // TODO: create closure for this.
+        // TriggerSubsetMatcher
+      }
+    }).subscribeOn(Schedulers.io()).toList().toBlocking().single().sort(startTimeOrId)
+
+//    allPipelines.each { pipeline ->
+//      clearTriggerStages(pipeline.trigger.other) // remove from the "other" field - that is what Jackson works against
+//      pipeline.getStages().each { stage ->
+//        if (stage.context?.group) {
+//          // TODO: consider making "group" a top-level field on the Stage model
+//          // for now, retain group in the context, as it is needed for collapsing templated pipelines in the UI
+//          stage.context = [ group: stage.context.group ]
+//        } else {
+//          stage.context = [:]
+//        }
+//        stage.outputs = [:]
+//        stage.tasks = []
+//      }
+//    }
 
     return filterPipelinesByHistoryCutoff(allPipelines, limit)
   }
@@ -297,6 +818,8 @@ class TaskController {
     return [result: evaluated?.expression, detail: evaluated?.expressionEvaluationSummary]
   }
 
+  // TODO(joonlim): search for all pipelines
+  // Should be called pipeline executions?
   @PreAuthorize("hasPermission(#application, 'APPLICATION', 'READ')")
   @RequestMapping(value = "/v2/applications/{application}/pipelines", method = RequestMethod.GET)
   List<Execution> getApplicationPipelines(@PathVariable String application,
@@ -339,23 +862,21 @@ class TaskController {
     }).subscribeOn(Schedulers.io()).toList().toBlocking().single().sort(startTimeOrId)
 
     if (!expand) {
-      allPipelines.each { pipeline ->
-        clearTriggerStages(pipeline.trigger.other) // remove from the "other" field - that is what Jackson works against
-        pipeline.getStages().each { stage ->
-          if (stage.context?.group) {
-            // TODO: consider making "group" a top-level field on the Stage model
-            // for now, retain group in the context, as it is needed for collapsing templated pipelines in the UI
-            stage.context = [ group: stage.context.group ]
-          } else {
-            stage.context = [:]
-          }
-          stage.outputs = [:]
-          stage.tasks = []
-        }
-      }
+      unexpandPipelineExecutions(allPipelines)
     }
 
     return filterPipelinesByHistoryCutoff(allPipelines, limit)
+  }
+
+  private List<String> getPipelineConfigIdsOfReadableApplications(List<String> applicationNames) {
+    Authentication auth = SecurityContextHolder.context.authentication
+    List<String> pipelineConfigIds = applicationNames.stream()
+      .filter{ applicationName -> permissionEvaluator || permissionEvaluator.hasPermission(auth, applicationName, 'APPLICATION', 'READ') }
+      .map{ applicationName -> front50Service.getPipelines(applicationName, false)*.id as List<String> }
+      .flatMap{ c -> c.stream() }
+      .collect(Collectors.toList())
+
+    return pipelineConfigIds
   }
 
   private static void clearTriggerStages(Map trigger) {
@@ -390,6 +911,23 @@ class TaskController {
     }
 
     return pipelinesSatisfyingCutoff.sort(startTimeOrId)
+  }
+
+  private static unexpandPipelineExecutions(List<Execution> pipelineExecutions) {
+    pipelineExecutions.each { pipelineExecution ->
+      clearTriggerStages(pipelineExecution.trigger.other) // remove from the "other" field - that is what Jackson works against
+      pipelineExecution.getStages().each { stage ->
+        if (stage.context?.group) {
+          // TODO: consider making "group" a top-level field on the Stage model
+          // for now, retain group in the context, as it is needed for collapsing templated pipelines in the UI
+          stage.context = [ group: stage.context.group ]
+        } else {
+          stage.context = [:]
+        }
+        stage.outputs = [:]
+        stage.tasks = []
+      }
+    }
   }
 
   private static Closure startTimeOrId = { a, b ->

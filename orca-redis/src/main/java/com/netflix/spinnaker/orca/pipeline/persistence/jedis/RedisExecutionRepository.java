@@ -1,5 +1,22 @@
 package com.netflix.spinnaker.orca.pipeline.persistence.jedis;
 
+import static com.google.common.collect.Maps.filterValues;
+import static com.netflix.spinnaker.orca.ExecutionStatus.BUFFERED;
+import static com.netflix.spinnaker.orca.config.RedisConfiguration.Clients.EXECUTION_REPOSITORY;
+import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.ORCHESTRATION;
+import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.PIPELINE;
+import static com.netflix.spinnaker.orca.pipeline.model.Execution.NO_TRIGGER;
+import static com.netflix.spinnaker.orca.pipeline.model.SyntheticStageOwner.STAGE_AFTER;
+import static com.netflix.spinnaker.orca.pipeline.model.SyntheticStageOwner.STAGE_BEFORE;
+import static java.lang.String.format;
+import static java.lang.System.currentTimeMillis;
+import static java.util.Collections.emptyList;
+import static java.util.Collections.emptyMap;
+import static java.util.Collections.emptySet;
+import static net.logstash.logback.argument.StructuredArguments.value;
+import static redis.clients.jedis.BinaryClient.LIST_POSITION.AFTER;
+import static redis.clients.jedis.BinaryClient.LIST_POSITION.BEFORE;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -11,10 +28,38 @@ import com.netflix.spinnaker.kork.jedis.RedisClientSelector;
 import com.netflix.spinnaker.orca.ExecutionStatus;
 import com.netflix.spinnaker.orca.jackson.OrcaObjectMapper;
 import com.netflix.spinnaker.orca.notifications.scheduling.PollingAgentExecutionRepository;
-import com.netflix.spinnaker.orca.pipeline.model.*;
+import com.netflix.spinnaker.orca.pipeline.model.Execution;
 import com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType;
 import com.netflix.spinnaker.orca.pipeline.model.Execution.PausedDetails;
-import com.netflix.spinnaker.orca.pipeline.persistence.*;
+import com.netflix.spinnaker.orca.pipeline.model.Stage;
+import com.netflix.spinnaker.orca.pipeline.model.SyntheticStageOwner;
+import com.netflix.spinnaker.orca.pipeline.model.SystemNotification;
+import com.netflix.spinnaker.orca.pipeline.model.Task;
+import com.netflix.spinnaker.orca.pipeline.model.Trigger;
+import com.netflix.spinnaker.orca.pipeline.persistence.ExecutionNotFoundException;
+import com.netflix.spinnaker.orca.pipeline.persistence.ExecutionRepository;
+import com.netflix.spinnaker.orca.pipeline.persistence.ExecutionSerializationException;
+import com.netflix.spinnaker.orca.pipeline.persistence.StageSerializationException;
+import com.netflix.spinnaker.orca.pipeline.persistence.UnpausablePipelineException;
+import com.netflix.spinnaker.orca.pipeline.persistence.UnresumablePipelineException;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import javax.annotation.Nonnull;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.jetbrains.annotations.NotNull;
@@ -36,30 +81,6 @@ import rx.functions.Func0;
 import rx.functions.Func1;
 import rx.functions.Func2;
 import rx.schedulers.Schedulers;
-
-import javax.annotation.Nonnull;
-import java.io.IOException;
-import java.util.*;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-
-import static com.google.common.collect.Maps.filterValues;
-import static com.netflix.spinnaker.orca.ExecutionStatus.BUFFERED;
-import static com.netflix.spinnaker.orca.config.RedisConfiguration.Clients.EXECUTION_REPOSITORY;
-import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.ORCHESTRATION;
-import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.PIPELINE;
-import static com.netflix.spinnaker.orca.pipeline.model.Execution.NO_TRIGGER;
-import static com.netflix.spinnaker.orca.pipeline.model.SyntheticStageOwner.STAGE_AFTER;
-import static com.netflix.spinnaker.orca.pipeline.model.SyntheticStageOwner.STAGE_BEFORE;
-import static java.lang.String.format;
-import static java.lang.System.currentTimeMillis;
-import static java.util.Collections.*;
-import static net.logstash.logback.argument.StructuredArguments.value;
-import static redis.clients.jedis.BinaryClient.LIST_POSITION.AFTER;
-import static redis.clients.jedis.BinaryClient.LIST_POSITION.BEFORE;
 
 @Component
 @ConditionalOnProperty(value = "executionRepository.redis.enabled", matchIfMissing = true)
@@ -370,7 +391,8 @@ public class RedisExecutionRepository implements ExecutionRepository, PollingAge
     Map<RedisClientDelegate, List<String>> filteredPipelineIdsByDelegate = new HashMap<>();
     if (!criteria.getStatuses().isEmpty()) {
       allRedisDelegates().forEach(d -> d.withCommandsClient(c -> {
-        List<String> pipelineKeys = new ArrayList<>(c.zrevrange(executionsByPipelineKey(pipelineConfigId), 0, -1));
+        List<String> pipelineKeys = new ArrayList<>(c.zrevrangeByScore(executionsByPipelineKey(pipelineConfigId), criteria.getBuildTimeEndBoundary(), criteria.getBuildTimeStartBoundary()));
+        // List<String> pipelineKeys = new ArrayList<>(c.zrevrange(executionsByPipelineKey(pipelineConfigId), 0, -1));
 
         if (pipelineKeys.isEmpty()) {
           return;
