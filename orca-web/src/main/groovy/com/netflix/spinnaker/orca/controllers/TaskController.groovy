@@ -16,7 +16,8 @@
 
 package com.netflix.spinnaker.orca.controllers
 
-import java.time.Clock
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.google.common.collect.Collections2
 import com.netflix.spinnaker.orca.ExecutionStatus
 import com.netflix.spinnaker.orca.front50.Front50Service
 import com.netflix.spinnaker.orca.model.OrchestrationViewModel
@@ -39,6 +40,10 @@ import org.springframework.security.access.prepost.PreAuthorize
 import org.springframework.security.access.prepost.PreFilter
 import org.springframework.web.bind.annotation.*
 import rx.schedulers.Schedulers
+
+import java.nio.charset.Charset
+import java.time.Clock
+
 import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.ORCHESTRATION
 import static com.netflix.spinnaker.orca.pipeline.model.Execution.ExecutionType.PIPELINE
 import static java.time.ZoneOffset.UTC
@@ -60,6 +65,9 @@ class TaskController {
 
   @Autowired
   ContextParameterProcessor contextParameterProcessor
+
+  @Autowired
+  ObjectMapper mapper
 
   @Value('${tasks.daysOfExecutionHistory:14}')
   int daysOfExecutionHistory
@@ -177,6 +185,128 @@ class TaskController {
     }).subscribeOn(Schedulers.io()).toList().toBlocking().single().sort(startTimeOrId)
 
     return filterPipelinesByHistoryCutoff(allPipelines, limit)
+  }
+
+  /**
+   * Search for pipeline executions using a combination of criteria.
+   *
+   * @param application Only includes executions that are part of this application.
+   * @param triggerType Only includes executions that were triggered by a trigger with this type. If
+   * this value is '*', includes executions with all trigger types.
+   * @param eventId (optional) Only includes executions that were triggered by a trigger with this
+   * eventId. This only applies to triggers that return a response message when called.
+   * @param encodedTriggerParams (optional) Only includes executions that were triggered by a
+   * trigger that matches the subset of fields provided by this value. This value should be a base64
+   * encoded string of a JSON representation of a trigger object.
+   * @param buildTimeStartBoundary (optional) Only includes executions that were built at or after
+   * the given time, represented as a Unix timestamp in ms (UTC). This value must be >= 0 and <=
+   * the value of [buildTimeEndBoundary], if provided. If this value is missing, it is defaulted to
+   * 0.
+   * @param buildTimeEndBoundary (optional) Only includes executions that were built at or before
+   * the given time, represented as a Unix timestamp in ms (UTC). This value must be <=
+   * 9223372036854775807 (Long.MAX_VALUE) and >= the value of [buildTimeStartBoundary], if provided.
+   * If this value is missing, it is defaulted to 9223372036854775807.
+   * @param statuses (optional) Only includes executions with a status that is equal to a status
+   * provided in this field. The list of statuses should be given as a comma-delimited string. If
+   * this value is missing, includes executions of all statuses. Allowed statuses are: NOT_STARTED,
+   * RUNNING, PAUSED, SUSPENDED, SUCCEEDED, FAILED_CONTINUE, TERMINAL, CANCELED, REDIRECT, STOPPED,
+   * SKIPPED, BUFFERED. @see com.netflix.spinnaker.orca.ExecutionStatus for more info.
+   * @param page (optional) Sets the first item of the resulting list for pagination. The list is
+   * 0-indexed. This value must be >= 0. If this value is missing, it is defaulted to 0.
+   * @param pageSize (optional) Sets the size of the resulting list for pagination. This value must
+   * be > 0. If this value is missing, it is defaulted to 10.
+   * @param reverse (optional) Reverses the resulting list before it is paginated. If this value is
+   * missing, it is defaulted to false.
+   * @param expand (optional) Expands each execution object in the resulting list. If this value is
+   * missing, it is defaulted to false.
+   * @return
+   */
+  @PreAuthorize("hasPermission(#application, 'APPLICATION', 'READ')")
+  @RequestMapping(value = "/pipelines/{application}/search/{triggerType}", method = RequestMethod.GET)
+  List<Execution> searchForPipelineExecutions(
+    @PathVariable(value = "application") String application,
+    @PathVariable(value = "triggerType") String triggerType,
+    @RequestParam(value = "eventId", required = false) String eventId,
+    @RequestParam(value = "encodedTriggerParams", required = false) String encodedTriggerParams,
+    @RequestParam(value = "buildTimeStartBoundary", defaultValue = "0") long buildTimeStartBoundary,
+    @RequestParam(value = "buildTimeEndBoundary", defaultValue = "9223372036854775807" /* Long.MAX_VALUE */) long buildTimeEndBoundary,
+    @RequestParam(value = "statuses", required = false) String statuses,
+    @RequestParam(value = "page", defaultValue =  "0") int page,
+    @RequestParam(value = "pageSize", defaultValue = "10") int pageSize,
+    @RequestParam(value = "reverse", defaultValue = "false") boolean reverse,
+    @RequestParam(value = "expand", defaultValue = "false") boolean expand
+  ) {
+    if (buildTimeStartBoundary < 0) {
+      throw new RuntimeException(String.format("buildTimeStartBoundary must be >= 0: buildTimeStartBoundary=%s", buildTimeStartBoundary))
+    }
+    if (buildTimeEndBoundary < 0) {
+      throw new RuntimeException(String.format("buildTimeEndBoundary must be >= 0: buildTimeEndBoundary=%s", buildTimeEndBoundary))
+    }
+    if (buildTimeStartBoundary > buildTimeEndBoundary) {
+      throw new RuntimeException(String.format("buildTimeStartBoundary must be <= buildTimeEndBoundary: buildTimeStartBoundary=%s, buildTimeEndBoundary=%s", buildTimeStartBoundary, buildTimeEndBoundary))
+    }
+    if (page < 0) {
+      throw new RuntimeException(String.format("page must be >= 0: page=%s", page))
+    }
+    if (pageSize <= 0) {
+      throw new RuntimeException(String.format("pageSize must be > 0: pageSize=%s", pageSize))
+    }
+
+    Map triggerParams
+    if (encodedTriggerParams != null) {
+      byte[] decoded = Base64.getDecoder().decode(encodedTriggerParams)
+      String str = new String(decoded, Charset.forName("UTF-8"))
+      triggerParams = mapper.readValue(str, Map.class)
+    } else {
+      triggerParams = new HashMap()
+    }
+
+    if (triggerType != "*") {
+      triggerParams.put("type", triggerType)
+    }
+    if (eventId != null) {
+      triggerParams.put("eventId", eventId)
+    }
+
+    statuses = statuses ?: ExecutionStatus.values()*.toString().join(",")
+
+    ExecutionRepository.BuildTimeBoundaryExecutionCriteria executionCriteria = new ExecutionRepository.BuildTimeBoundaryExecutionCriteria(
+      buildTimeStartBoundary: buildTimeStartBoundary,
+      buildTimeEndBoundary: buildTimeEndBoundary,
+      statuses: (statuses.split(",") as Collection)
+    )
+
+    // TODO(joonlim): It may make sense in the future to allow a user to specify '*' as the application to search across all applications
+    List<String> pipelineConfigIds = front50Service.getPipelines(application, false)*.id as List<String>
+
+    List<Execution> pipelineExecutions = rx.Observable.merge(pipelineConfigIds.collect {
+      executionRepository.retrievePipelinesForPipelineConfigIdWithBuildTimeBoundary(it, executionCriteria).filter {
+        // Compare each execution's trigger to input triggerParams
+        Map triggerAsMap = mapper.convertValue(it.getTrigger(), Map.class)
+        return recursivelyCheckIfObjectFieldsMatchesAllSubsetFields(triggerAsMap, triggerParams)
+      }
+    }).subscribeOn(Schedulers.io())
+      .toList()
+      .toBlocking()
+      .single()
+      .sort(reverseBuildTime)
+
+    if (reverse) {
+      pipelineExecutions.reverse(true)
+    }
+
+    List<Execution> rval
+    if (page >= pipelineExecutions.size()) {
+      rval = []
+    } else {
+      rval = pipelineExecutions.subList(page, Math.min(pipelineExecutions.size(), page + pageSize))
+    }
+
+    if (!expand) {
+      unexpandPipelineExecutions(rval)
+    }
+
+    return rval
   }
 
   @PostAuthorize("hasPermission(returnObject.application, 'APPLICATION', 'READ')")
@@ -339,20 +469,7 @@ class TaskController {
     }).subscribeOn(Schedulers.io()).toList().toBlocking().single().sort(startTimeOrId)
 
     if (!expand) {
-      allPipelines.each { pipeline ->
-        clearTriggerStages(pipeline.trigger.other) // remove from the "other" field - that is what Jackson works against
-        pipeline.getStages().each { stage ->
-          if (stage.context?.group) {
-            // TODO: consider making "group" a top-level field on the Stage model
-            // for now, retain group in the context, as it is needed for collapsing templated pipelines in the UI
-            stage.context = [ group: stage.context.group ]
-          } else {
-            stage.context = [:]
-          }
-          stage.outputs = [:]
-          stage.tasks = []
-        }
-      }
+      unexpandPipelineExecutions(allPipelines)
     }
 
     return filterPipelinesByHistoryCutoff(allPipelines, limit)
@@ -392,6 +509,30 @@ class TaskController {
     return pipelinesSatisfyingCutoff.sort(startTimeOrId)
   }
 
+  private static unexpandPipelineExecutions(List<Execution> pipelineExecutions) {
+    pipelineExecutions.each { pipelineExecution ->
+      clearTriggerStages(pipelineExecution.trigger.other) // remove from the "other" field - that is what Jackson works against
+      pipelineExecution.getStages().each { stage ->
+        if (stage.context?.group) {
+          // TODO: consider making "group" a top-level field on the Stage model
+          // for now, retain group in the context, as it is needed for collapsing templated pipelines in the UI
+          stage.context = [ group: stage.context.group ]
+        } else {
+          stage.context = [:]
+        }
+        stage.outputs = [:]
+        stage.tasks = []
+      }
+    }
+  }
+
+  private static Closure reverseBuildTime = { a, b ->
+    def aBuildTime = a.buildTime ?: 0
+    def bBuildTime = b.buildTime ?: 0
+
+    return bBuildTime <=> aBuildTime ?: b.id <=> a.id
+  }
+
   private static Closure startTimeOrId = { a, b ->
     def aStartTime = a.startTime ?: 0
     def bStartTime = b.startTime ?: 0
@@ -423,6 +564,72 @@ class TaskController {
       endTime: orchestration.endTime,
       execution: orchestration
     )
+  }
+
+  private static boolean recursivelyCheckIfObjectFieldsMatchesAllSubsetFields(Object object, Object subset) {
+    if (String.isInstance(object) && String.isInstance(subset)) {
+      // object matches subset if:
+      // - object equals subset
+      // - object matches subset as a regular expression
+      return ((String) object).matches((String) subset)
+    } else if (Map.isInstance(object) && Map.isInstance(subset)) {
+      // object matches subset if:
+      // - object contains all keys of subset and their values match
+      Map objectAsMap = (Map) object
+      Map subsetAsMap = (Map) subset
+      for (Object key : subsetAsMap.keySet()) {
+        if (!recursivelyCheckIfObjectFieldsMatchesAllSubsetFields(objectAsMap.get(key), subsetAsMap.get(key))) {
+          return false
+        }
+      }
+      return true
+    } else if (Collection.isInstance(object) && Collection.isInstance(subset)) {
+      // object matches subset if:
+      // - object contains a unique item that matches each item in subset
+      //   * this means that an item in subset may not match to more than one item in object, which
+      //     means that we should check every permutation of object to avoid greedily stopping
+      //     on the first item that matches.
+      //     e.g., Given,
+      //             object: [ { "name": "a", "version": "1" }, { "name" } ]
+      //           Without checking all permutations, this will match:
+      //             subset: [ { "name": "a", "version": "1" }, { "name" } ]
+      //           but will not match:
+      //             subset: [ { "name": "a" }, { "name", "version": "1" } ]
+      //           because the first item in subset will greedily match the first item in object,
+      //           leaving the second items in both, which do not match. This is fixed by checking
+      //           all permutations of object.
+      Collection<List> permutationsOfObjectAsList = Collections2.permutations((Collection) object)
+      List subsetAsList = new ArrayList((Collection) subset)
+      for (List objectAsList : permutationsOfObjectAsList) {
+        objectAsList = new ArrayList(objectAsList) // this should be mutable because we will be removing items
+        boolean matchedAllItems = true
+
+        for (Object subsetItem : subsetAsList) {
+          boolean matchedItem = false
+          for (Object objectItem : objectAsList) {
+            if (recursivelyCheckIfObjectFieldsMatchesAllSubsetFields(objectItem, subsetItem)) {
+              objectAsList.remove(objectItem) // make sure to not match the same item more than once
+              matchedItem = true
+              break
+            }
+          }
+
+          if (!matchedItem) {
+            matchedAllItems = false
+            break
+          }
+        }
+
+        if (matchedAllItems) {
+          return true
+        }
+      }
+
+      // Failed to match for all permutations
+      return false
+    } else {
+      return object == subset
+    }
   }
 
   @InheritConstructors
