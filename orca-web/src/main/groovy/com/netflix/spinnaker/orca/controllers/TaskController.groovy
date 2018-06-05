@@ -394,9 +394,10 @@ class TaskController {
         triggerParams.put(key.substring("trigger_".length()), params.get(key))
       }
     }
-    for (String key : body.keySet()) {
-      triggerParams.put(key, body.get(key))
-    }
+    if (body != null)
+      for (String key : body.keySet()) {
+        triggerParams.put(key, body.get(key))
+      }
     log.error("triggerParams: {}", triggerParams)
 
     log.error("LOAD EXECUTIONS =====================================================")
